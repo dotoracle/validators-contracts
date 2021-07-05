@@ -19,6 +19,12 @@ contract DTOBonding is Governable, ChainIdHolding, IBonding {
     
     mapping(address => ValidatorPending) public pendingValidators;
 
+    address public stakingContract;
+    address public pendingStakingContract;
+    uint256 public pendingStakingChangeApprovalsCount;
+    //pending address => validator => bool
+    mapping(address => mapping(address => bool)) public pendingStakingChangeApprovalsMap;
+
     uint256 public immutable override BONDING_AMOUNT;
     uint256 public constant override MINIMUM_WAITING = 1 hours;
     uint256 public constant APPROVE_PERCENT_THRESHOLD = 100;
@@ -37,6 +43,34 @@ contract DTOBonding is Governable, ChainIdHolding, IBonding {
         _;
     }
 
+    function setStakingContract(address _staking) external onlyGovernance {
+        require(stakingContract == address(0) && _staking != address(0), "Staking change after initial settings need governance");
+        stakingContract = _staking;
+    }
+
+    function proposeStakingContractChange(address _newContract) external onlyGovernance {
+        require(pendingStakingContract == address(0) && _newContract != address(0), "!invalid new contract or another contract already pending");
+        pendingStakingContract = _newContract;
+        pendingStakingChangeApprovalsCount = 0;
+    }
+
+    function cancelStakingContractProposal() external onlyGovernance {
+        pendingStakingContract = address(0);
+        pendingStakingChangeApprovalsCount = 0;
+    }
+
+    function approveStakingContractChange() external {
+        require(pendingStakingContract != address(0), "Nothing is in pending state");
+        require(validatorMap[msg.sender].blockNumber > 0, "DTOBonding: not a validator to approve");
+        require(!pendingStakingChangeApprovalsMap[pendingStakingContract][msg.sender], "Already approved");
+        pendingStakingChangeApprovalsCount++;
+        if (pendingStakingChangeApprovalsCount.mul(100).div(validatorList.length) >= APPROVE_PERCENT_THRESHOLD) {
+            stakingContract = pendingStakingContract;
+            pendingStakingContract = address(0);
+            pendingStakingChangeApprovalsCount = 0;
+        }
+    }
+
     function applyValidtor() external override notValidator(msg.sender) notPendingValidator(msg.sender) {
         SafeTransferHelper.safeTransferFrom(dtoToken, msg.sender, address(this), BONDING_AMOUNT);
         address[] memory approveList;
@@ -49,7 +83,7 @@ contract DTOBonding is Governable, ChainIdHolding, IBonding {
         emit ValidatorApply(msg.sender, block.number, block.timestamp);
     }
 
-    function approveValidator(address _validator) external override onlyGovernance notValidator(_validator) {
+    function approveValidator(address _validator) external override notValidator(_validator) {
         require(validatorMap[msg.sender].blockNumber > 0, "DTOBonding: not a validator to approve");
         require(pendingValidators[_validator].blockNumber > 0, "DTOBonding: not a pending validator");
         require(pendingValidators[_validator].timestamp.sub(block.timestamp) >= MINIMUM_WAITING, "DTOBonding: approval too early");
@@ -98,6 +132,7 @@ contract DTOBonding is Governable, ChainIdHolding, IBonding {
                 break;
             }
         }
+        emit ValidatorResign(msg.sender, block.number, block.timestamp);
     }
 
     function cancelValidatorApplication() external {
